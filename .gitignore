@@ -207,3 +207,4 @@ marimo/_lsp/
 __marimo__/
 .vscode/settings.json
 mistranslate.txt
+.DS_Store

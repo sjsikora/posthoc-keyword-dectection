@@ -3,7 +3,8 @@ import numpy as np
 import queue
 import sys
 from classes.stt import WhisperModel
-from config import SAMPLE_RATE, CHANNELS, BLOCK_SIZE
+from classes.detector import PhoneticKeywordDetector
+from config import SAMPLE_RATE, CHANNELS, BLOCK_SIZE, KEYWORDS, PHONETIC_K
 
 audio_queue = queue.Queue()
 
@@ -47,6 +48,7 @@ def main():
     selected_device = choose_microphone()
 
     whisper = WhisperModel()
+    detector = PhoneticKeywordDetector(KEYWORDS, PHONETIC_K)
 
     # 2. Open the audio stream using the selected device
     stream = sd.InputStream(
@@ -67,7 +69,10 @@ def main():
                 result = whisper.transcribe_audio_chunk(audio_chunk)
 
                 if result:
-                    print(f"[{result.pharse}, {result.confidence}]")
+                    print(f"Transcription: {result.pharse}")
+                    detections = detector.detect_keyword(result.pharse)
+                    for d in detections.keywords:
+                        print(f"  >> KEYWORD '{d.pharse}' detected (confidence: {d.confidence:.2f})")
 
         except KeyboardInterrupt:
             print("\nStopping transcription pipeline...")
