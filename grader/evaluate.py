@@ -22,6 +22,7 @@ Thresholds are loaded from grader/data/thresholds.json (produced by tune.py).
 Falls back to config.py defaults if thresholds.json is missing.
 """
 
+import argparse
 import json
 import os
 import re
@@ -39,7 +40,7 @@ from classes.detector import (
     ConfusionWeightedPhoneticDetector,
 )
 
-TRANSCRIPTIONS_PATH   = os.path.join(os.path.dirname(__file__), "data", "transcriptions_validation.jsonl")
+DEFAULT_TRANSCRIPTIONS = os.path.join(os.path.dirname(__file__), "data", "transcriptions_validation.jsonl")
 CONFUSION_MATRIX_PATH = os.path.join(os.path.dirname(__file__), "data", "phoneme_confusion.json")
 THRESHOLDS_PATH       = os.path.join(os.path.dirname(__file__), "data", "thresholds.json")
 RESULTS_PATH          = os.path.join(os.path.dirname(__file__), "data", "results.json")
@@ -217,12 +218,19 @@ def _print_per_keyword_table(results: dict[str, dict], keywords: list[str]) -> N
 
 
 def main() -> None:
-    if not os.path.exists(TRANSCRIPTIONS_PATH):
-        print(f"ERROR: {TRANSCRIPTIONS_PATH} not found.")
+    parser = argparse.ArgumentParser(description="Evaluate keyword detectors on cached transcriptions.")
+    parser.add_argument("--transcriptions", default=DEFAULT_TRANSCRIPTIONS,
+                        help="Path to transcriptions JSONL file (default: transcriptions_validation.jsonl).")
+    parser.add_argument("--results", default=RESULTS_PATH,
+                        help="Path to write results JSON (default: results.json).")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.transcriptions):
+        print(f"ERROR: {args.transcriptions} not found.")
         print("Run: python -m grader.transcribe --split validation")
         sys.exit(1)
 
-    records = _load_transcriptions(TRANSCRIPTIONS_PATH)
+    records = _load_transcriptions(args.transcriptions)
     print(f"Loaded {len(records)} transcription records.")
 
     records = [r for r in records if r.get("true_word") in KEYWORD_WORDS or r.get("true_word") == "none"]
@@ -249,10 +257,10 @@ def main() -> None:
     _print_comparison_table(results)
     _print_per_keyword_table(results, KEYWORD_WORDS)
 
-    os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
-    with open(RESULTS_PATH, "w") as f:
+    os.makedirs(os.path.dirname(args.results), exist_ok=True)
+    with open(args.results, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nFull results (confusion matrices + per-keyword metrics) → {RESULTS_PATH}")
+    print(f"\nFull results (confusion matrices + per-keyword metrics) → {args.results}")
 
 
 if __name__ == "__main__":

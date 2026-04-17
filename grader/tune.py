@@ -10,6 +10,7 @@ Output
     grader/data/threshold_curves.json — macro F1 at each candidate (for plots)
 """
 
+import argparse
 import json
 import os
 import re
@@ -36,10 +37,10 @@ KEYWORD_WORDS = [
 ]
 
 CANDIDATES: dict[str, list[float]] = {
-    "Phonetic":          [0, 1, 2, 3],
-    "NormPhonetic":      [0.10, 0.20, 0.25, 0.33, 0.40, 0.50],
-    "MSPhonetic":        [0.25, 0.50, 0.75, 1.00, 1.25, 1.50],
-    "ConfusionWeighted": [0.5, 1.0, 1.5, 2.0, 2.5],
+    "Phonetic":          [1, 2, 3],
+    "NormPhonetic":      [0.10, 0.20, 0.25, 0.30, 0.40, 0.50],
+    "MSPhonetic":        [0.10, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00],
+    "ConfusionWeighted": [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
 }
 
 
@@ -57,7 +58,8 @@ def _load_records(path: str) -> list[dict]:
     return [r for r in records if r.get("true_word") in KEYWORD_WORDS or r.get("true_word") == "none"]
 
 
-def _macro_f1(detector, records: list[dict], keywords: list[str]) -> float:
+def _macro_metrics(detector, records: list[dict], keywords: list[str]) -> tuple[float, float, float]:
+    """Returns (macro_precision, macro_recall, macro_f1)."""
     kw_set = set(keywords)
     all_labels = keywords + ["none"]
     # rows include "none" so unknown-clip false positives are counted
@@ -78,16 +80,19 @@ def _macro_f1(detector, records: list[dict], keywords: list[str]) -> float:
             detected = "none"
         confusion[true_word][detected] += 1
 
-    f1s = []
+    precisions, recalls, f1s = [], [], []
     for kw in keywords:
         tp = confusion[kw][kw]
-        # FP: other keywords mislabelled as kw, AND unknown clips mislabelled as kw
         fp = sum(confusion[o][kw] for o in all_labels if o != kw)
         fn = sum(confusion[kw][l] for l in all_labels if l != kw)
         p = tp / (tp + fp) if (tp + fp) > 0 else 0.0
         r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1s.append(2 * p * r / (p + r) if (p + r) > 0 else 0.0)
-    return sum(f1s) / len(f1s)
+        f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+        precisions.append(p)
+        recalls.append(r)
+        f1s.append(f1)
+    n = len(keywords)
+    return sum(precisions) / n, sum(recalls) / n, sum(f1s) / n
 
 
 def tune(records: list[dict], keywords: list[str]) -> tuple[dict, dict]:
@@ -114,43 +119,54 @@ def tune(records: list[dict], keywords: list[str]) -> tuple[dict, dict]:
         curve: dict[str, float] = {}
 
         print(f"\n  {name}")
-        print(f"  {'Threshold':>12}  {'Macro F1':>10}")
-        print(f"  {'-'*12}  {'-'*10}")
+        print(f"  {'Threshold':>12}  {'Precision':>10}  {'Recall':>10}  {'F1':>10}")
+        print(f"  {'-'*12}  {'-'*10}  {'-'*10}  {'-'*10}")
 
         for k in candidates:
-            f1 = _macro_f1(builder(k), records, keywords)
-            curve[str(k)] = round(f1, 6)
-            print(f"  {k:>12}  {f1:>10.4f}")
+            p, r, f1 = _macro_metrics(builder(k), records, keywords)
+            curve[str(k)] = {"precision": round(p, 6), "recall": round(r, 6), "f1": round(f1, 6)}
+            print(f"  {k:>12}  {p:>10.4f}  {r:>10.4f}  {f1:>10.4f}")
 
-        best_k = max(curve, key=lambda x: curve[x])
+        best_k = max(curve, key=lambda x: curve[x]["f1"])
         best_thresholds[name] = float(best_k)
         curves[name] = curve
-        print(f"  → best threshold: {best_k}  (F1 = {curve[best_k]:.4f})")
+        print(f"  → best threshold: {best_k}  (F1 = {curve[best_k]['f1']:.4f})")
 
     return best_thresholds, curves
 
 
 def main() -> None:
-    if not os.path.exists(TRAIN_PATH):
-        print(f"ERROR: {TRAIN_PATH} not found.")
+    parser = argparse.ArgumentParser(description="Sweep detector thresholds on cached transcriptions.")
+    parser.add_argument("--transcriptions", default=TRAIN_PATH,
+                        help="Path to transcriptions JSONL (default: train split).")
+    parser.add_argument("--curves-out", default=CURVES_PATH,
+                        help="Where to write threshold_curves JSON (default: threshold_curves.json).")
+    parser.add_argument("--no-save-thresholds", action="store_true",
+                        help="Skip writing thresholds.json (useful when sweeping validation data).")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.transcriptions):
+        print(f"ERROR: {args.transcriptions} not found.")
         print("Run: python -m grader.transcribe --split train --samples 50")
         sys.exit(1)
 
-    records = _load_records(TRAIN_PATH)
-    print(f"Loaded {len(records)} train transcriptions "
+    records = _load_records(args.transcriptions)
+    print(f"Loaded {len(records)} transcriptions "
           f"({len({r['true_word'] for r in records})} words covered).\n")
-    print("Sweeping thresholds on train split...")
+    print(f"Sweeping thresholds on {args.transcriptions}...")
 
     best, curves = tune(records, KEYWORD_WORDS)
 
-    os.makedirs(os.path.dirname(THRESHOLDS_PATH), exist_ok=True)
-    with open(THRESHOLDS_PATH, "w") as f:
-        json.dump(best, f, indent=2)
-    with open(CURVES_PATH, "w") as f:
+    os.makedirs(os.path.dirname(args.curves_out), exist_ok=True)
+    with open(args.curves_out, "w") as f:
         json.dump(curves, f, indent=2)
+    print(f"Threshold curves → {args.curves_out}")
 
-    print(f"\nBest thresholds → {THRESHOLDS_PATH}")
-    print(f"Threshold curves → {CURVES_PATH}")
+    if not args.no_save_thresholds:
+        with open(THRESHOLDS_PATH, "w") as f:
+            json.dump(best, f, indent=2)
+        print(f"Best thresholds  → {THRESHOLDS_PATH}")
+
     print("\nSummary:")
     for name, k in best.items():
         print(f"  {name:<22} k = {k}")

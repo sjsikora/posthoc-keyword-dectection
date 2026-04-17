@@ -15,9 +15,8 @@ class STTModel():
         pass
 class WhisperModel(STTModel):
 
-    LOG_PROB_THRESHOLD = -1
-
-    def __init__(self) -> None:
+    def __init__(self, log_prob_threshold: float = -1.0) -> None:
+        self.LOG_PROB_THRESHOLD = log_prob_threshold
         print("Loading Hugging Face Whisper model (this may take a moment)...")
         model_id = "openai/whisper-base"
 
