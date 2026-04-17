@@ -36,9 +36,11 @@ class WhisperModel(STTModel):
             return_tensors="pt"
         ).input_features.to(self.device)
 
-        # 1. Ask the model to return its internal scoring data
+        # 1. Ask the model to return its internal scoring data, forced to English
         outputs = self.model.generate(
             input_features,
+            language="en",
+            task="transcribe",
             return_dict_in_generate=True,
             output_scores=True
         )

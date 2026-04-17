@@ -4,6 +4,7 @@ from config import KEYWORDS
 from classes.phonetic import word_to_phonemes, phoneme_distance
 from classes.ms_phonetic.vectors import arpabet_to_vectors, PhonemeVector
 from classes.ms_phonetic.distance import phonetic_distance as ms_phonetic_distance
+import math
 import re
 
 @dataclass
@@ -118,6 +119,7 @@ class NormalizedPhoneticDetector(KeywordDetector):
         return ProcessedKeywords(detections)
 
 
+
 def _word_to_ms_vectors(word: str) -> list[PhonemeVector] | None:
     """CMU dict → stress-stripped ARPAbet → list[PhonemeVector] for MS distance."""
     arpabet = word_to_phonemes(word)
@@ -174,6 +176,82 @@ class MicrosoftPhoneticDetector(KeywordDetector):
 
             for kw, kw_vecs in self.keyword_vectors.items():
                 dist = ms_phonetic_distance(word_vecs, kw_vecs)
+                if dist <= self.k:
+                    confidence = max(0.0, 1.0 - dist / (self.k + 1))
+                    detections.append(KeywordDetection(kw, confidence))
+
+        return ProcessedKeywords(detections)
+
+
+class ConfusionWeightedPhoneticDetector(KeywordDetector):
+    """
+    Phonetic keyword detector whose substitution costs come from a data-driven
+    phoneme confusion matrix built by grader/build_confusion.py.
+
+    Instead of treating every phoneme substitution as cost-1 (uniform Levenshtein),
+    this detector uses empirically measured Whisper error rates:
+
+        cost(ref_phone, hyp_phone) = 1 - P(hyp | ref)
+                                   = 1 - count(ref→hyp) / total_ref_occurrences
+
+    If Whisper commonly transcribes keyword phoneme S as Z (e.g. in noisy audio),
+    then cost(S, Z) ≈ 0, so a word containing Z still matches an S-keyword cheaply.
+
+    Falls back gracefully to uniform cost = 1 if the matrix file does not yet exist
+    (run `python -m grader.build_confusion` first to generate it).
+
+    The threshold k is in the same units as PhoneticKeywordDetector (cumulative
+    weighted edit distance, where each substitution contributes in [0, 1]).
+    """
+
+    def __init__(self, keywords: list[str], k: float, matrix_path: str) -> None:
+        self.k = k
+        self.keyword_phonemes: dict[str, list[str]] = {}
+
+        from grader.confusion_matrix import load_matrix, build_cost_table
+        raw = load_matrix(matrix_path)
+        self._cost_table = build_cost_table(raw)
+
+        if not raw:
+            print(f"Warning: confusion matrix not found at '{matrix_path}'. "
+                  "Run `python -m grader.build_confusion` to generate it. "
+                  "Falling back to uniform substitution costs.")
+
+        for kw in keywords:
+            phones = word_to_phonemes(kw)
+            if phones is not None:
+                self.keyword_phonemes[kw] = phones
+            else:
+                print(f"Warning: '{kw}' not found in CMU dict — skipping.")
+
+    def _weighted_distance(self, a: list[str], b: list[str]) -> float:
+        """
+        Levenshtein with data-driven substitution costs.
+        Insertion/deletion cost is uniform = 1 (same as PhoneticKeywordDetector).
+        """
+        from grader.confusion_matrix import substitution_cost
+        m, n = len(a), len(b)
+        dp = [float(j) for j in range(n + 1)]
+        for i in range(1, m + 1):
+            prev = dp[0]
+            dp[0] = float(i)
+            for j in range(1, n + 1):
+                temp = dp[j]
+                sub  = prev + substitution_cost(a[i - 1], b[j - 1], self._cost_table)
+                dp[j] = min(sub, dp[j] + 1.0, dp[j - 1] + 1.0)
+                prev = temp
+        return dp[n]
+
+    def detect_keyword(self, phrase: str) -> ProcessedKeywords:
+        words = re.findall(r'\b\w+\b', phrase)
+        detections = []
+
+        for word in words:
+            word_phones = word_to_phonemes(word)
+            if word_phones is None:
+                continue
+            for kw, kw_phones in self.keyword_phonemes.items():
+                dist = self._weighted_distance(word_phones, kw_phones)
                 if dist <= self.k:
                     confidence = max(0.0, 1.0 - dist / (self.k + 1))
                     detections.append(KeywordDetection(kw, confidence))

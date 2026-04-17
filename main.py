@@ -2,35 +2,33 @@ import sounddevice as sd
 import numpy as np
 import queue
 import sys
+import time
+from collections import defaultdict
 from classes.stt import WhisperModel
 from classes.detector import PhoneticKeywordDetector
-from config import SAMPLE_RATE, CHANNELS, BLOCK_SIZE, KEYWORDS, PHONETIC_K
+from config import (
+    SAMPLE_RATE, CHANNELS, WINDOW_SIZE, STEP_SIZE,
+    KEYWORDS, PHONETIC_K, DETECTION_COOLDOWN,
+)
 
-audio_queue = queue.Queue()
+audio_queue: queue.Queue[np.ndarray] = queue.Queue()
 
 def audio_callback(indata, frames, time, status):
-    """Callback triggered by sounddevice for every new block of audio."""
     if status:
         print(status, file=sys.stderr)
     audio_queue.put(indata.copy())
 
-def choose_microphone():
-    """Queries system for input devices and prompts the user to select one."""
-    print("🎙️ Available Microphone Inputs:\n" + "-"*30)
+def choose_microphone() -> int:
+    print("Available Microphone Inputs:\n" + "-" * 30)
     devices = sd.query_devices()
     valid_inputs = []
-
-    # Filter and display only devices that can capture audio
     for i, device in enumerate(devices):
         if device['max_input_channels'] > 0:
             print(f"[{i}] {device['name']}")
             valid_inputs.append(i)
-
     if not valid_inputs:
         print("No input devices found. Please connect a microphone.")
         sys.exit(1)
-
-    # Loop until the user provides a valid device ID
     while True:
         try:
             choice = input("\nSelect the microphone ID you want to use: ")
@@ -38,41 +36,62 @@ def choose_microphone():
             if device_id in valid_inputs:
                 print(f"Selected: {devices[device_id]['name']}\n")
                 return device_id
-            else:
-                print("Invalid ID. Please choose a number from the list above.")
+            print("Invalid ID. Please choose a number from the list above.")
         except ValueError:
             print("Invalid input. Please enter a number.")
 
 def main():
-    # 1. Prompt user for device selection first
     selected_device = choose_microphone()
 
-    whisper = WhisperModel()
+    whisper  = WhisperModel()
     detector = PhoneticKeywordDetector(KEYWORDS, PHONETIC_K)
 
-    # 2. Open the audio stream using the selected device
+    # Rolling audio buffer — holds WINDOW_SIZE samples (3 s).
+    # The stream fires every STEP_SIZE samples (1 s), giving 67% window overlap.
+    # Overlapping windows catch keywords that straddle a chunk boundary.
+    window = np.zeros((WINDOW_SIZE, CHANNELS), dtype='float32')
+    chunks_received = 0
+    chunks_to_fill  = WINDOW_SIZE // STEP_SIZE  # 3 chunks before first analysis
+
+    # Cooldown: suppress re-firing the same keyword across overlapping windows.
+    last_detection: dict[str, float] = defaultdict(float)
+
     stream = sd.InputStream(
         device=selected_device,
         samplerate=SAMPLE_RATE,
         channels=CHANNELS,
         dtype='float32',
-        blocksize=BLOCK_SIZE,
-        callback=audio_callback
+        blocksize=STEP_SIZE,
+        callback=audio_callback,
     )
 
     with stream:
-        print("🎤 Listening... (Press Ctrl+C to stop)")
+        print(f"Listening... (window={WINDOW_SIZE // SAMPLE_RATE}s, step={STEP_SIZE // SAMPLE_RATE}s, Press Ctrl+C to stop)")
         try:
             while True:
-                audio_chunk = audio_queue.get()
+                chunk = audio_queue.get()   # STEP_SIZE new samples
 
-                result = whisper.transcribe_audio_chunk(audio_chunk)
+                # Slide the window forward by one step
+                window = np.roll(window, -len(chunk), axis=0)
+                window[-len(chunk):] = chunk
+                chunks_received += 1
 
-                if result:
-                    print(f"Transcription: {result.pharse}")
-                    detections = detector.detect_keyword(result.pharse)
-                    for d in detections.keywords:
+                # Don't analyse until the buffer is fully populated
+                if chunks_received < chunks_to_fill:
+                    continue
+
+                result = whisper.transcribe_audio_chunk(window)
+                if not result:
+                    continue
+
+                print(f"Transcription: {result.pharse}")
+                detections = detector.detect_keyword(result.pharse)
+
+                now = time.monotonic()
+                for d in detections.keywords:
+                    if now - last_detection[d.pharse] >= DETECTION_COOLDOWN:
                         print(f"  >> KEYWORD '{d.pharse}' detected (confidence: {d.confidence:.2f})")
+                        last_detection[d.pharse] = now
 
         except KeyboardInterrupt:
             print("\nStopping transcription pipeline...")

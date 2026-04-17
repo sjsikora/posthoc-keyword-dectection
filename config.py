@@ -1,6 +1,11 @@
 SAMPLE_RATE = 16000 # Whisper strictly requires 16kHz audio
 CHANNELS = 1 # Mono audio
-BLOCK_SIZE = SAMPLE_RATE * 3 # Process the audio in three second chunks
+WINDOW_SIZE = SAMPLE_RATE * 3  # analysis window: 3 seconds fed to Whisper
+STEP_SIZE   = SAMPLE_RATE * 1  # advance 1 second per step (67% overlap with 3-s window)
+BLOCK_SIZE  = WINDOW_SIZE      # kept for backwards compatibility
+
+# Seconds to suppress re-firing the same keyword across overlapping windows.
+DETECTION_COOLDOWN = 2.0
 
 """
 Keywords should only be one single word. It is un defined behavior (and unwise in general)
@@ -32,3 +37,7 @@ PHONETIC_K_RATIO = 0.33
 # k=0.5 ≈ one close consonant substitution (e.g. P↔B costs 0.25)
 # k=1.0 ≈ several near-phoneme differences or one vowel insertion (cost 0.5)
 MS_PHONETIC_K = 0.5
+
+# Path to the data-driven phoneme confusion matrix produced by grader/build_confusion.py.
+# If the file does not exist the detector falls back to uniform substitution costs.
+CONFUSION_MATRIX_PATH = "grader/data/phoneme_confusion.json"
