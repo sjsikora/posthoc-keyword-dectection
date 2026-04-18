@@ -7,6 +7,10 @@ By converting transcriptions into ARPAbet phoneme sequences, the frameworks appl
 metrics of varying complexity: linear search, Levenshtein distance, Euclidean phonetic space
 distance, and confusion-weighted metric.
 
+## Video Overview
+
+https://youtu.be/Wt2knAQcHFQ
+
 ## Project Objective
 
 Standard keyword spotting (KWS) systems operate directly on raw audio with task-specific models. This project investigates whether phonetic detectors on top of a general-purpose ASR model (Whisper) can achieve competitive performance.
